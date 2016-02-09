@@ -23,3 +23,5 @@ libraryDependencies ++= Seq(
 )
 
 publishTo := Some("Crowdmix Artifactory" at "https://artifactory.dev.crwd.mx/artifactory/libs-release-local")
+
+parallelExecution in Test := false
