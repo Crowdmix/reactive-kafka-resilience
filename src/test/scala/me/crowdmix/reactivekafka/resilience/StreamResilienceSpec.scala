@@ -1,5 +1,7 @@
 package me.crowdmix.reactivekafka.resilience
 
+import java.util.UUID.randomUUID
+
 import akka.actor.ActorSystem
 import akka.stream.actor.ActorSubscriber
 import akka.stream.scaladsl.{Source, Sink}
@@ -16,7 +18,7 @@ import scala.reflect.io.Directory
 import scala.util.control.NonFatal
 
 
-class WriteOnlyStreamSpec extends TestKit(ActorSystem("WriteOnlyStreamSpec", ConfigFactory.parseString(
+class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", ConfigFactory.parseString(
   """
     |akka {
     |  log-config-on-start = off
@@ -52,6 +54,27 @@ class WriteOnlyStreamSpec extends TestKit(ActorSystem("WriteOnlyStreamSpec", Con
   implicit val kafkaConfig = EmbeddedKafkaConfig(kafkaPort = 9092, zooKeeperPort = 2181)
   val kafkaBrokerList = s"localhost:${kafkaConfig.kafkaPort}"
 
+  val topic = "testTopic"
+  val clientId = "testClientId"
+
+  val alwaysResume: Supervision.Decider = {
+    case NonFatal(ex) =>
+      println(s"Exception while processing: '${ex.getMessage}'", ex)
+      Supervision.Resume
+  }
+
+  implicit val materializer =
+    ActorMaterializer(
+      ActorMaterializerSettings(system)
+        .withSupervisionStrategy(alwaysResume)
+    )(system)
+
+  val producerProperties = ProducerProperties(
+    brokerList = kafkaBrokerList,
+    topic = topic,
+    clientId = clientId,
+    encoder = new StringEncoder)
+
   override def afterAll(): Unit = {
     TestKit.shutdownActorSystem(system)
   }
@@ -69,32 +92,10 @@ class WriteOnlyStreamSpec extends TestKit(ActorSystem("WriteOnlyStreamSpec", Con
       //TODO bake this into EmbeddedKafka itself, fe via heartbeating of some sort
       Thread.sleep(3000)
 
-      val alwaysResume: Supervision.Decider = {
-        case NonFatal(ex) =>
-          println(s"Exception while processing: '${ex.getMessage}'", ex)
-          Supervision.Resume
-      }
-
-      implicit val materializer =
-        ActorMaterializer(
-          ActorMaterializerSettings(system)
-            .withSupervisionStrategy(alwaysResume)
-        )(system)
-
-      val topic = "testTopic"
-      val producerProps = ProducerProperties(
-        brokerList = kafkaBrokerList,
-        topic = topic,
-        clientId = "testClientId",
-        encoder = new StringEncoder
-      ) //.requestRequiredAcks(LeaderAck)
-
       val kafkaActorSubscriber = ActorSubscriber[String](
         system.actorOf(
-          kafka.producerActorProps(producerProps),
-          s"kafka-sink"
-        )
-      )
+          kafka.producerActorProps(producerProperties),
+          s"kafka-sink-$randomUUID"))
 
       val kafkaSink = Sink(kafkaActorSubscriber)
 
@@ -116,7 +117,8 @@ class WriteOnlyStreamSpec extends TestKit(ActorSystem("WriteOnlyStreamSpec", Con
       sourceActorRef ! "b"
 
       Thread.sleep(3000)  // let Reactive Kafka producer give up retrying before bringing Kafka back up
-      //TODO ascertain [akka://WriteOnlyStreamSpec/user/kafka-sink] restarted
+      //TODO ascertain [akka://WriteOnlyStreamSpec/user/kafka-sink-UUID] Failed to send messages after X tries.
+      //TODO ascertain [akka://WriteOnlyStreamSpec/user/kafka-sink-UUID] restarted
 
       EmbeddedKafka.startKafka(kafkaLogDir)
       Thread.sleep(3000)  // let Kafka start up
@@ -129,6 +131,34 @@ class WriteOnlyStreamSpec extends TestKit(ActorSystem("WriteOnlyStreamSpec", Con
     } finally {
       EmbeddedKafka.stopKafka()
       EmbeddedKafka.stopZooKeeper()
+    }
+  }
+
+  it should "be resilient to Kafka not being available initially and begin processing as soon as Kafka becomes available" in {
+    val kafka = new ReactiveKafka()
+
+    val kafkaActorSubscriber = ActorSubscriber[String](
+      system.actorOf(
+        kafka.producerActorProps(producerProperties),
+        s"kafka-sink-$randomUUID"))
+
+    val kafkaSink = Sink(kafkaActorSubscriber)
+
+    Source.repeat("a")
+      .map { v: String =>
+        v.toUpperCase
+      }
+      .to(kafkaSink)
+      .run()
+
+    Thread.sleep(5000)  // let Reactive Kafka producer give up retrying before starting Kafka
+    //TODO ascertain [akka://WriteOnlyStreamSpec/user/kafka-sink-UUID] Failed to send messages after X tries.
+    //TODO ascertain [akka://WriteOnlyStreamSpec/user/kafka-sink-UUID] restarted
+
+    withRunningKafka {
+      eventually {
+        consumeFirstStringMessageFrom(topic) shouldBe "A"
+      }
     }
   }
 }
