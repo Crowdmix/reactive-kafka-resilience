@@ -275,6 +275,67 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
     sinkProbe.expectNext("C")
   }
 
+  "A stream with KafkaActorPublisher-based Source and KafkaActorSubscriber-based Sink" should
+    "be resilient to failure with exception in intermediate processing stage" in withRunningKafka {
+    val inputTopic = testTopic()
+
+    def publishInput(msg: String) = publishStringMessageToKafka(inputTopic, msg)
+
+    publishInput("a")
+    publishInput("b")
+    publishInput("c")
+    publishInput("d")
+    publishInput("e")
+
+    val kafka = new ReactiveKafka()
+
+    val consumerProperties =
+      ConsumerProperties(
+        brokerList = brokerList,
+        zooKeeperHost = zooKeeperHost,
+        topic = inputTopic,
+        groupId = testConsumerGroupId(),
+        decoder = new StringDecoder())
+    val consumerActor = system.actorOf(
+      kafka.consumerActorProps(consumerProperties),
+      testSourceName())
+
+    val clientId = testClientId()
+
+    val outputTopic = testTopic()
+
+    val producerProperties = ProducerProperties(
+      brokerList = brokerList,
+      topic = outputTopic,
+      clientId = clientId,
+      encoder = new StringEncoder)
+
+    val kafkaActorSubscriber = ActorSubscriber[String](
+      system.actorOf(
+        kafka.producerActorProps(producerProperties),
+        testSinkName()))
+
+    Source(ActorPublisher[KafkaMessage[String]](consumerActor))
+      .map(_.message)
+      .map {
+        case "c" =>
+          throw new RuntimeException("Intermediate stage primed to fail with exception")
+        case v: String =>
+          v.toUpperCase
+      }
+      .to(Sink(kafkaActorSubscriber))
+      .run()
+
+    def expectOutput(msg: String) = eventually {
+      consumeFirstStringMessageFrom(outputTopic) shouldBe msg
+    }
+
+    expectOutput("A")
+    expectOutput("B")
+    expectOutput("D")
+    expectOutput("E")
+  }
+
   def testClientId() = s"clientId-${randomUUID()}"
   def testConsumerGroupId() = s"groupId-${randomUUID()}"
   def testTopic() = s"topic-${randomUUID()}"
