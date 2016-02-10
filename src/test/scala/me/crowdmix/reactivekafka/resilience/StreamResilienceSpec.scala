@@ -2,20 +2,25 @@ package me.crowdmix.reactivekafka.resilience
 
 import java.util.UUID.randomUUID
 
-import akka.actor.ActorSystem
+import akka.actor._
+import akka.event.Logging.LogEvent
+import akka.pattern._
 import akka.stream.actor.{ActorPublisher, ActorSubscriber}
 import akka.stream.scaladsl.{Keep, Sink, Source}
 import akka.stream.testkit.scaladsl.TestSink
 import akka.stream.{ActorMaterializer, ActorMaterializerSettings, OverflowStrategy, Supervision}
 import akka.testkit.TestKit
+import akka.util.Timeout
 import com.softwaremill.react.kafka.KafkaMessages.KafkaMessage
 import com.softwaremill.react.kafka.{ConsumerProperties, ProducerProperties, ReactiveKafka}
 import com.typesafe.config.ConfigFactory
 import kafka.serializer.{StringDecoder, StringEncoder}
 import net.manub.embeddedkafka.{EmbeddedKafka, EmbeddedKafkaConfig}
 import org.scalatest._
-import org.scalatest.concurrent.Eventually
+import org.scalatest.concurrent.{Eventually, ScalaFutures}
+import org.scalatest.time.{Microseconds, Seconds, Span}
 
+import scala.concurrent.duration._
 import scala.reflect.io.Directory
 import scala.util.control.NonFatal
 
@@ -51,6 +56,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
   with Matchers
   with EmbeddedKafka
   with Eventually
+  with ScalaFutures
   with BeforeAndAfter
   with BeforeAndAfterAll {
 
@@ -122,10 +128,10 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
 
     EmbeddedKafka.stopKafka()
 
-    sourceActorRef ! "b"
+    expectLogEvent(_.message == "Failed to send messages after 3 tries.") {  // let Reactive Kafka producer give up retrying before starting Kafka
+      sourceActorRef ! "b"
+    }
 
-    Thread.sleep(3 * 1000)  // let Reactive Kafka producer give up retrying before bringing Kafka back up
-    //TODO ascertain [akka://StreamResilienceSpec/user/kafka-sink-UUID] Failed to send messages after X tries.
     //TODO ascertain [akka://StreamResilienceSpec/user/kafka-sink-UUID] restarted
 
     EmbeddedKafka.startKafka(kafkaDir)
@@ -163,8 +169,9 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
       .to(kafkaSink)
       .run()
 
-    Thread.sleep(5 * 1000)  // let Reactive Kafka producer give up retrying before starting Kafka
-    //TODO ascertain [akka://StreamResilienceSpec/user/kafka-sink-UUID] Failed to send messages after X tries.
+    // let Reactive Kafka producer give up retrying before starting Kafka
+    expectLogEvent(_.message == "Failed to send messages after 3 tries.")()
+
     //TODO ascertain [akka://StreamResilienceSpec/user/kafka-sink-UUID] restarted
 
     withRunningKafka {
@@ -327,6 +334,33 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
     }
 
     Seq("A", "B", "D", "E") foreach expectOutput
+  }
+
+  def expectLogEvent(condition: LogEvent => Boolean)(f: => Unit) = {
+    val logListener = system.actorOf(Props(new Actor {
+      var capturedEvent: Option[LogEvent] = None
+
+      def receive = {
+        case event: LogEvent if condition(event) =>
+          capturedEvent = Some(event)
+        case "report" =>
+          sender() ! capturedEvent
+        case _ =>
+      }
+    }))
+    system.eventStream.subscribe(logListener, classOf[LogEvent])
+
+    try {
+      f
+
+      eventually {
+        whenReady(logListener.ask("report")(Timeout(5.seconds)).mapTo[Option[LogEvent]]) {
+          _ shouldBe 'defined
+        }
+      }(PatienceConfig(timeout = Span(5, Seconds), interval = Span(100, Microseconds)))  //TODO use implicit patience from caller's scope
+    } finally {
+      system.eventStream.unsubscribe(logListener)
+    }
   }
 
   def testClientId() = s"clientId-${randomUUID()}"
