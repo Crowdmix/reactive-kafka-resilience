@@ -125,8 +125,8 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
     sourceActorRef ! "b"
 
     Thread.sleep(3 * 1000)  // let Reactive Kafka producer give up retrying before bringing Kafka back up
-    //TODO ascertain [akka://WriteOnlyStreamSpec/user/kafka-sink-UUID] Failed to send messages after X tries.
-    //TODO ascertain [akka://WriteOnlyStreamSpec/user/kafka-sink-UUID] restarted
+    //TODO ascertain [akka://StreamResilienceSpec/user/kafka-sink-UUID] Failed to send messages after X tries.
+    //TODO ascertain [akka://StreamResilienceSpec/user/kafka-sink-UUID] restarted
 
     EmbeddedKafka.startKafka(kafkaDir)
     Thread.sleep(5 * 1000)  // let Kafka start up
@@ -164,8 +164,8 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
       .run()
 
     Thread.sleep(5 * 1000)  // let Reactive Kafka producer give up retrying before starting Kafka
-    //TODO ascertain [akka://WriteOnlyStreamSpec/user/kafka-sink-UUID] Failed to send messages after X tries.
-    //TODO ascertain [akka://WriteOnlyStreamSpec/user/kafka-sink-UUID] restarted
+    //TODO ascertain [akka://StreamResilienceSpec/user/kafka-sink-UUID] Failed to send messages after X tries.
+    //TODO ascertain [akka://StreamResilienceSpec/user/kafka-sink-UUID] restarted
 
     withRunningKafka {
       eventually {
@@ -279,13 +279,9 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
     "be resilient to failure with exception in intermediate processing stage" in withRunningKafka {
     val inputTopic = testTopic()
 
-    def publishInput(msg: String) = publishStringMessageToKafka(inputTopic, msg)
+    val publishInput = (msg: String) => publishStringMessageToKafka(inputTopic, msg)
 
-    publishInput("a")
-    publishInput("b")
-    publishInput("c")
-    publishInput("d")
-    publishInput("e")
+    Seq("a", "b", "c", "d", "e") foreach publishInput
 
     val kafka = new ReactiveKafka()
 
@@ -330,10 +326,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
       consumeFirstStringMessageFrom(outputTopic) shouldBe msg
     }
 
-    expectOutput("A")
-    expectOutput("B")
-    expectOutput("D")
-    expectOutput("E")
+    Seq("A", "B", "D", "E") foreach expectOutput
   }
 
   def testClientId() = s"clientId-${randomUUID()}"
