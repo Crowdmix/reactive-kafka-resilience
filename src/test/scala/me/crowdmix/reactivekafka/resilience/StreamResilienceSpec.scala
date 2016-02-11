@@ -18,7 +18,7 @@ import kafka.serializer.{StringDecoder, StringEncoder}
 import net.manub.embeddedkafka.{EmbeddedKafka, EmbeddedKafkaConfig}
 import org.scalatest._
 import org.scalatest.concurrent.{Eventually, ScalaFutures}
-import org.scalatest.time.{Microseconds, Seconds, Span}
+import org.scalatest.time.{Seconds, Span}
 
 import scala.concurrent.duration._
 import scala.reflect.io.Directory
@@ -64,6 +64,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
   """.stripMargin)))
   with FlatSpecLike
   with Matchers
+  with GivenWhenThen
   with EmbeddedKafka
   with Eventually
   with ScalaFutures
@@ -103,6 +104,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
     "be resilient to Kafka becoming unavailable and continue processing when Kafka comes back up" in {
     val kafka = new ReactiveKafka()
 
+    Given("Kafka and ZooKeeper are available")
     val zkDir = testZooKeeperDir()
     val kafkaDir = testKafkaDir()
     EmbeddedKafka.startZooKeeper(zkDir)
@@ -127,6 +129,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
 
     val kafkaSink = Sink(kafkaActorSubscriber)
 
+    And("the stream is created and run")
     val sourceActorRef = Source.actorRef(bufferSize = 100, overflowStrategy = OverflowStrategy.fail)
       .map { v: String =>
         v.toUpperCase
@@ -136,29 +139,35 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
 
     sourceActorRef ! "a"
 
+    And("the stream is processing and outputting messages onto a topic")
     eventually {
       consumeFirstStringMessageFrom(topic) shouldBe "A"
     }
 
+    When("Kafka becomes unavailable")
     EmbeddedKafka.stopKafka()
 
+    Then("Kafka producer will retry and fail to send a message")
     expectLogEvent(_.message == "Failed to send messages after 3 tries.") {  // let Reactive Kafka producer give up retrying before starting Kafka
       sourceActorRef ! "b"
     }
 
     //TODO ascertain [akka://StreamResilienceSpec/user/kafka-sink-UUID] restarted
 
+    When("Kafka comes back up")
     EmbeddedKafka.startKafka(kafkaDir)
     Thread.sleep(5 * 1000)  // let Kafka start up
 
     sourceActorRef ! "c"
 
+    Then("the stream should resume processing and outputting messages onto the topic")
     eventually {
       consumeFirstStringMessageFrom(topic) shouldBe "C"
     }
   }
 
   it should "be resilient to Kafka being unavailable initially and begin processing as soon as Kafka becomes available" in {
+    Given("Kafka and ZooKeeper are unavailable")
     val kafka = new ReactiveKafka()
 
     val topic = testTopic()
@@ -176,6 +185,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
 
     val kafkaSink = Sink(kafkaActorSubscriber)
 
+    And("the stream is created and run")
     Source.repeat("a")
       .map { v: String =>
         v.toUpperCase
@@ -183,12 +193,15 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
       .to(kafkaSink)
       .run()
 
+    Then("Kafka producer will retry and fail to send a message")
     // let Reactive Kafka producer give up retrying before starting Kafka
     expectLogEvent(_.message == "Failed to send messages after 3 tries.")()
 
     //TODO ascertain [akka://StreamResilienceSpec/user/kafka-sink-UUID] restarted
 
+    When("Kafka and ZooKeeper become available")
     withRunningKafka {
+      Then("the stream should start processing and producing messages onto output topic")
       eventually {
         consumeFirstStringMessageFrom(topic) shouldBe "A"
       }
@@ -207,9 +220,11 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
 
     val topic = testTopic()
 
+    Given("an input topic with messages")
     publishStringMessageToKafka(topic, "a")
     publishStringMessageToKafka(topic, "b")
 
+    And("Kafka is unavailable and ZooKeeper is available")
     EmbeddedKafka.stopKafka()
 
     val kafka = new ReactiveKafka()
@@ -225,6 +240,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
       kafka.consumerActorProps(consumerProperties).withDispatcher(BoundedForkJoinDispatcher),
       testSourceName())
 
+    And("the stream is created and run")
     val sinkProbe =
       Source(ActorPublisher[KafkaMessage[String]](consumerActor))
         .map(_.message)
@@ -238,14 +254,17 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
 
     Thread.sleep(60 * 1000)  // ample time for things to fail if they are meant to
 
+    When("Kafka becomes available")
     EmbeddedKafka.startKafka(kafkaDir)
     Thread.sleep(5 * 1000)  // let Kafka start up
 
+    Then("the stream will start consuming and processing messages from the input topic")
     sinkProbe.expectNext("A", "B")
   }
 
   it should
     "be resilient to Kafka becoming unavailable during processing and resume processing as soon as Kafka becomes available" in {
+    Given("Kafka and ZooKeeper are available")
     val zkDir = testZooKeeperDir()
     val kafkaDir = testKafkaDir()
     EmbeddedKafka.startZooKeeper(zkDir)
@@ -256,6 +275,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
 
     val topic = testTopic()
 
+    And("an input topic contains messages")
     publishStringMessageToKafka(topic, "a")
     publishStringMessageToKafka(topic, "b")
     publishStringMessageToKafka(topic, "c")
@@ -273,6 +293,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
       kafka.consumerActorProps(consumerProperties).withDispatcher(BoundedForkJoinDispatcher),
       testSourceName())
 
+    When("the stream is created and run")
     val sinkProbe =
       Source(ActorPublisher[KafkaMessage[String]](consumerActor))
         .map(_.message)
@@ -282,26 +303,32 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
         .toMat(TestSink.probe[String])(Keep.right)
         .run()
 
+    Then("the stream will start consuming and processing messages from the input topic")
     sinkProbe.request(n = 2)
     sinkProbe.expectNext("A", "B")
 
+    When("Kafka becomes unavailable")
     EmbeddedKafka.stopKafka()
 
     sinkProbe.request(n = 1)
     Thread.sleep(60 * 1000)  // ample time for things to fail if they are meant to
 
+    And("Kafka later becomes available")
     EmbeddedKafka.startKafka(kafkaDir)
     Thread.sleep(5 * 1000)  // let Kafka start up
 
+    Then("the stream should resume consuming and processing messages from the input topic")
     sinkProbe.expectNext("C")
   }
 
   "A stream with KafkaActorPublisher-based Source and KafkaActorSubscriber-based Sink" should
     "be resilient to failure with exception in intermediate processing stage" in withRunningKafka {
+    Given("Kafka and ZooKeeper are available")
     val inputTopic = testTopic()
 
     val publishInput = (msg: String) => publishStringMessageToKafka(inputTopic, msg)
 
+    And("an input topic contains messages")
     Seq("a", "b", "c", "d", "e") foreach publishInput
 
     val kafka = new ReactiveKafka()
@@ -332,6 +359,8 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
         kafka.producerActorProps(producerProperties).withDispatcher(BoundedForkJoinDispatcher),
         testSinkName()))
 
+    And("the stream is created and run")
+    When("the stream throws exception in intermediate processing stage")
     Source(ActorPublisher[KafkaMessage[String]](consumerActor))
       .map(_.message)
       .map {
@@ -347,6 +376,8 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
       consumeFirstStringMessageFrom(outputTopic) shouldBe msg
     }
 
+    Then("the stream should drop message causing exception and continue consuming and processing messages " +
+      "from the input topic and producing them onto the output topic")
     Seq("A", "B", "D", "E") foreach expectOutput
   }
 
