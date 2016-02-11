@@ -93,6 +93,8 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
     EmbeddedKafka.stopZooKeeper()
   }
 
+  override implicit val patienceConfig = PatienceConfig(timeout = Span(10, Seconds))
+
   override def afterAll(): Unit = {
     TestKit.shutdownActorSystem(system)
   }
@@ -348,7 +350,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
     Seq("A", "B", "D", "E") foreach expectOutput
   }
 
-  def expectLogEvent(condition: LogEvent => Boolean)(f: => Unit) = {
+  def expectLogEvent(condition: LogEvent => Boolean)(block: => Unit) = {
     val logListener = system.actorOf(Props(new Actor {
       var capturedEvent: Option[LogEvent] = None
 
@@ -363,13 +365,13 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
     system.eventStream.subscribe(logListener, classOf[LogEvent])
 
     try {
-      f
+      block
 
       eventually {
         whenReady(logListener.ask("report")(Timeout(5.seconds)).mapTo[Option[LogEvent]]) {
           _ shouldBe 'defined
         }
-      }(PatienceConfig(timeout = Span(5, Seconds), interval = Span(100, Microseconds)))  //TODO use implicit patience from caller's scope
+      }
     } finally {
       system.eventStream.unsubscribe(logListener)
     }
