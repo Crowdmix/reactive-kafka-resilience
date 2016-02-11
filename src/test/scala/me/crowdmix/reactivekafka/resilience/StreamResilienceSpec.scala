@@ -49,6 +49,16 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
     |      event-stream = on
     |      unhandled = on
     |    }
+    |
+    |    custom {
+    |      dispatchers {
+    |        bounded-fork-join-dispatcher {
+    |          type = Dispatcher
+    |          executor = "fork-join-executor"
+    |          mailbox-requirement = "akka.dispatch.BoundedMessageQueueSemantics"
+    |        }
+    |      }
+    |    }
     |  }
     |}
   """.stripMargin)))
@@ -76,6 +86,8 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
         .withSupervisionStrategy(alwaysResume)
     )(system)
 
+  val BoundedForkJoinDispatcher = "akka.actor.custom.dispatchers.bounded-fork-join-dispatcher"
+
   after {
     EmbeddedKafka.stopKafka()
     EmbeddedKafka.stopZooKeeper()
@@ -95,7 +107,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
     EmbeddedKafka.startKafka(kafkaDir)
     // let ZooKeeper/Kafka start up
     //TODO bake this into EmbeddedKafka itself, fe via heartbeating of some sort
-    Thread.sleep(5 * 1000)
+    Thread.sleep(10 * 1000)
 
     val topic = testTopic()
     val clientId = testClientId()
@@ -108,7 +120,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
 
     val kafkaActorSubscriber = ActorSubscriber[String](
       system.actorOf(
-        kafka.producerActorProps(producerProperties),
+        kafka.producerActorProps(producerProperties).withDispatcher(BoundedForkJoinDispatcher),
         testSinkName()))
 
     val kafkaSink = Sink(kafkaActorSubscriber)
@@ -157,7 +169,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
 
     val kafkaActorSubscriber = ActorSubscriber[String](
       system.actorOf(
-        kafka.producerActorProps(producerProperties),
+        kafka.producerActorProps(producerProperties).withDispatcher(BoundedForkJoinDispatcher),
         testSinkName()))
 
     val kafkaSink = Sink(kafkaActorSubscriber)
@@ -208,7 +220,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
         groupId = testConsumerGroupId(),
         decoder = new StringDecoder())
     val consumerActor = system.actorOf(
-      kafka.consumerActorProps(consumerProperties),
+      kafka.consumerActorProps(consumerProperties).withDispatcher(BoundedForkJoinDispatcher),
       testSourceName())
 
     val sinkProbe =
@@ -256,7 +268,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
         groupId = testConsumerGroupId(),
         decoder = new StringDecoder())
     val consumerActor = system.actorOf(
-      kafka.consumerActorProps(consumerProperties),
+      kafka.consumerActorProps(consumerProperties).withDispatcher(BoundedForkJoinDispatcher),
       testSourceName())
 
     val sinkProbe =
@@ -300,7 +312,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
         groupId = testConsumerGroupId(),
         decoder = new StringDecoder())
     val consumerActor = system.actorOf(
-      kafka.consumerActorProps(consumerProperties),
+      kafka.consumerActorProps(consumerProperties).withDispatcher(BoundedForkJoinDispatcher),
       testSourceName())
 
     val clientId = testClientId()
@@ -315,7 +327,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
 
     val kafkaActorSubscriber = ActorSubscriber[String](
       system.actorOf(
-        kafka.producerActorProps(producerProperties),
+        kafka.producerActorProps(producerProperties).withDispatcher(BoundedForkJoinDispatcher),
         testSinkName()))
 
     Source(ActorPublisher[KafkaMessage[String]](consumerActor))
