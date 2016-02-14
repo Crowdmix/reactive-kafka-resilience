@@ -3,6 +3,7 @@ package me.crowdmix.reactivekafka.resilience
 import java.util.UUID.randomUUID
 
 import akka.actor._
+import akka.event.Logging
 import akka.event.Logging.LogEvent
 import akka.pattern._
 import akka.stream.actor.{ActorPublisher, ActorSubscriber}
@@ -121,11 +122,10 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
       topic = topic,
       clientId = clientId,
       encoder = new StringEncoder)
-
-    val kafkaActorSubscriber = ActorSubscriber[String](
-      system.actorOf(
-        kafka.producerActorProps(producerProperties).withDispatcher(BoundedForkJoinDispatcher),
-        testSinkName()))
+    val kafkaProducer = system.actorOf(
+      kafka.producerActorProps(producerProperties).withDispatcher(BoundedForkJoinDispatcher),
+      testSinkName())
+    val kafkaActorSubscriber = ActorSubscriber[String](kafkaProducer)
 
     val kafkaSink = Sink(kafkaActorSubscriber)
 
@@ -148,11 +148,14 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
     EmbeddedKafka.stopKafka()
 
     Then("Kafka producer will retry and fail to send a message")
-    expectLogEvent(_.message == "Failed to send messages after 3 tries.") {  // let Reactive Kafka producer give up retrying before starting Kafka
+    And("KafkaActorSubscriber backing the Sink is restarted")
+    expectLogEvents(
+      List(
+        KafkaProducerRetriesAndFailsToSend,
+        kafkaActorSubscriberRestarted(kafkaProducer)))
+    {
       sourceActorRef ! "b"
     }
-
-    //TODO ascertain [akka://StreamResilienceSpec/user/kafka-sink-UUID] restarted
 
     When("Kafka comes back up")
     EmbeddedKafka.startKafka(kafkaDir)
@@ -177,27 +180,31 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
       topic = topic,
       clientId = testClientId(),
       encoder = new StringEncoder)
-
-    val kafkaActorSubscriber = ActorSubscriber[String](
-      system.actorOf(
-        kafka.producerActorProps(producerProperties).withDispatcher(BoundedForkJoinDispatcher),
-        testSinkName()))
+    val kafkaProducer = system.actorOf(
+      kafka.producerActorProps(producerProperties).withDispatcher(BoundedForkJoinDispatcher),
+      testSinkName())
+    val kafkaActorSubscriber = ActorSubscriber[String](kafkaProducer)
 
     val kafkaSink = Sink(kafkaActorSubscriber)
 
-    And("the stream is created and run")
-    Source.repeat("a")
-      .map { v: String =>
-        v.toUpperCase
-      }
-      .to(kafkaSink)
-      .run()
+    When("the stream is created")
+    val stream =
+      Source.repeat("a")
+        .map { v: String =>
+          v.toUpperCase
+        }
+        .to(kafkaSink)
 
+    And("the stream is run")
     Then("Kafka producer will retry and fail to send a message")
-    // let Reactive Kafka producer give up retrying before starting Kafka
-    expectLogEvent(_.message == "Failed to send messages after 3 tries.")()
-
-    //TODO ascertain [akka://StreamResilienceSpec/user/kafka-sink-UUID] restarted
+    And("KafkaActorSubscriber backing the Sink is restarted")
+    expectLogEvents(
+      List(
+        KafkaProducerRetriesAndFailsToSend,
+        kafkaActorSubscriberRestarted(kafkaProducer)))
+    {
+      stream.run()
+    }
 
     When("Kafka and ZooKeeper become available")
     withRunningKafka {
@@ -381,15 +388,24 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
     Seq("A", "B", "D", "E") foreach expectOutput
   }
 
-  def expectLogEvent(condition: LogEvent => Boolean)(block: => Unit) = {
+  type LogEventCondition = LogEvent => Boolean
+  def expectLogEvent(condition: LogEventCondition)(block: => Unit): Unit = expectLogEvents(List(condition))(block)
+  def expectLogEvents(conditions: List[LogEventCondition])(block: => Unit): Unit = {
+    object ReportRemaining
+
     val logListener = system.actorOf(Props(new Actor {
-      var capturedEvent: Option[LogEvent] = None
+      var remaining: List[LogEventCondition] = conditions
 
       def receive = {
-        case event: LogEvent if condition(event) =>
-          capturedEvent = Some(event)
-        case "report" =>
-          sender() ! capturedEvent
+        case event: LogEvent =>
+          remaining match {
+            case Nil =>
+            case condition :: tail =>
+              if (condition(event))
+                remaining = tail
+          }
+        case ReportRemaining =>
+          sender() ! remaining
         case _ =>
       }
     }))
@@ -399,13 +415,22 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
       block
 
       eventually {
-        whenReady(logListener.ask("report")(Timeout(5.seconds)).mapTo[Option[LogEvent]]) {
-          _ shouldBe 'defined
+        whenReady(logListener.ask(ReportRemaining)(Timeout(5.seconds)).mapTo[List[LogEventCondition]]) {
+          _ shouldBe Nil
         }
       }
     } finally {
       system.eventStream.unsubscribe(logListener)
     }
+  }
+  val KafkaProducerRetriesAndFailsToSend: LogEventCondition = { event =>
+    event.isInstanceOf[Logging.Error] &&
+      event.asInstanceOf[Logging.Error].cause.getClass.getCanonicalName == "kafka.common.FailedToSendMessageException" &&  // matching on canonical name avoids headaches of maintaining precise dependency on Kafka
+      event.message == "Failed to send messages after 3 tries."
+  }
+  def kafkaActorSubscriberRestarted(kafkaProducer: ActorRef): LogEventCondition = { event =>
+    event.logSource == kafkaProducer.path.toString &&
+      event.message == "restarted"
   }
 
   def testClientId() = s"clientId-${randomUUID()}"
