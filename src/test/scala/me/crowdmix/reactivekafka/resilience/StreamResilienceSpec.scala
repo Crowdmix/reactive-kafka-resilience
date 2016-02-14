@@ -149,11 +149,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
 
     Then("Kafka producer will retry and fail to send a message")
     And("KafkaActorSubscriber backing the Sink is restarted")
-    expectLogEvents(
-      List(
-        KafkaProducerRetriesAndFailsToSend,
-        kafkaActorSubscriberRestarted(kafkaProducer)))
-    {
+    expectLogEvents(KafkaProducerRetriesAndFailsToSend, actorRestarted(kafkaProducer)) {
       sourceActorRef ! "b"
     }
 
@@ -198,11 +194,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
     And("the stream is run")
     Then("Kafka producer will retry and fail to send a message")
     And("KafkaActorSubscriber backing the Sink is restarted")
-    expectLogEvents(
-      List(
-        KafkaProducerRetriesAndFailsToSend,
-        kafkaActorSubscriberRestarted(kafkaProducer)))
-    {
+    expectLogEvents(KafkaProducerRetriesAndFailsToSend, actorRestarted(kafkaProducer)) {
       stream.run()
     }
 
@@ -389,7 +381,8 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
   }
 
   type LogEventCondition = LogEvent => Boolean
-  def expectLogEvent(condition: LogEventCondition)(block: => Unit): Unit = expectLogEvents(List(condition))(block)
+  def expectLogEvent(condition: LogEventCondition)(block: => Unit): Unit = expectLogEvents(condition)(block)
+  def expectLogEvents(conditions: LogEventCondition*)(block: => Unit): Unit = expectLogEvents(List(conditions: _*))(block)
   def expectLogEvents(conditions: List[LogEventCondition])(block: => Unit): Unit = {
     object ReportRemaining
 
@@ -428,8 +421,8 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
       event.asInstanceOf[Logging.Error].cause.getClass.getCanonicalName == "kafka.common.FailedToSendMessageException" &&  // matching on canonical name avoids headaches of maintaining precise dependency on Kafka
       event.message == "Failed to send messages after 3 tries."
   }
-  def kafkaActorSubscriberRestarted(kafkaProducer: ActorRef): LogEventCondition = { event =>
-    event.logSource == kafkaProducer.path.toString &&
+  def actorRestarted(actorRef: ActorRef): LogEventCondition = { event =>
+    event.logSource == actorRef.path.toString &&
       event.message == "restarted"
   }
 
