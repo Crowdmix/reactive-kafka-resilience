@@ -15,10 +15,10 @@ resolvers ++= Seq(
 )
 
 libraryDependencies ++= Seq(
-  "com.softwaremill.reactivekafka" %% "reactive-kafka-core" % "0.8.3" exclude ("junit", "junit"),
-  "com.typesafe.akka" %% "akka-actor" % "2.4.0",
+  "com.softwaremill.reactivekafka" %% "reactive-kafka-core" % "0.8.4" exclude ("junit", "junit"),
+  "com.typesafe.akka" %% "akka-actor" % "2.3.14",
   "com.typesafe.scala-logging" %% "scala-logging" % "3.1.0",
-  "com.typesafe.akka" %% "akka-stream-testkit-experimental" % "1.0" % "test",
+  "com.typesafe.akka" %% "akka-stream-testkit-experimental" % "2.0" % "test",
   "net.manub" %% "scalatest-embedded-kafka" % "0.4.3" % "test"
 )
 

@@ -127,7 +127,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
       testSinkName())
     val kafkaActorSubscriber = ActorSubscriber[String](kafkaProducer)
 
-    val kafkaSink = Sink(kafkaActorSubscriber)
+    val kafkaSink = Sink.fromSubscriber(kafkaActorSubscriber)
 
     And("the stream is created and run")
     val sourceActorRef = Source.actorRef(bufferSize = 100, overflowStrategy = OverflowStrategy.fail)
@@ -181,7 +181,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
       testSinkName())
     val kafkaActorSubscriber = ActorSubscriber[String](kafkaProducer)
 
-    val kafkaSink = Sink(kafkaActorSubscriber)
+    val kafkaSink = Sink.fromSubscriber(kafkaActorSubscriber)
 
     When("the stream is created")
     val stream =
@@ -241,7 +241,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
 
     And("the stream is created and run")
     val sinkProbe =
-      Source(ActorPublisher[KafkaMessage[String]](consumerActor))
+      Source.fromPublisher(ActorPublisher[KafkaMessage[String]](consumerActor))
         .map(_.message)
         .map { v: String =>
           v.toUpperCase
@@ -294,7 +294,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
 
     When("the stream is created and run")
     val sinkProbe =
-      Source(ActorPublisher[KafkaMessage[String]](consumerActor))
+      Source.fromPublisher(ActorPublisher[KafkaMessage[String]](consumerActor))
         .map(_.message)
         .map { v: String =>
           v.toUpperCase
@@ -360,7 +360,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
 
     And("the stream is created and run")
     When("the stream throws exception in intermediate processing stage")
-    Source(ActorPublisher[KafkaMessage[String]](consumerActor))
+    Source.fromPublisher(ActorPublisher[KafkaMessage[String]](consumerActor))
       .map(_.message)
       .map {
         case "c" =>
@@ -368,7 +368,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
         case v: String =>
           v.toUpperCase
       }
-      .to(Sink(kafkaActorSubscriber))
+      .to(Sink.fromSubscriber(kafkaActorSubscriber))
       .run()
 
     def expectOutput(msg: String) = eventually {
