@@ -19,7 +19,8 @@ libraryDependencies ++= Seq(
   "com.typesafe.scala-logging" %% "scala-logging" % "3.1.0",
   "com.typesafe.akka" %% "akka-testkit" % "2.4.2" % "test",
   "com.typesafe.akka" %% "akka-stream-testkit" % "2.4.2" % "test",
-  "net.manub" %% "scalatest-embedded-kafka" % "0.4.3" % "test"
+  "net.manub" %% "scalatest-embedded-kafka" % "0.4.3" % "test",
+  "me.crowdmix" %% "event-model-scala" % "128"
 )
 
 publishTo := Some("Crowdmix Artifactory" at "https://artifactory.dev.crwd.mx/artifactory/libs-release-local")

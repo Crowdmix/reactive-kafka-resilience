@@ -16,6 +16,8 @@ import com.softwaremill.react.kafka.KafkaMessages.KafkaMessage
 import com.softwaremill.react.kafka.{ConsumerProperties, ProducerProperties, ReactiveKafka}
 import com.typesafe.config.ConfigFactory
 import kafka.serializer.{StringDecoder, StringEncoder}
+import me.crowdmix.event.ChartChanged
+import me.crowdmix.event.marshalling.kafka.{AvroSpecificRecordSerializer, AvroSpecificRecordDecoder}
 import net.manub.embeddedkafka.{EmbeddedKafka, EmbeddedKafkaConfig}
 import org.scalatest._
 import org.scalatest.concurrent.{Eventually, ScalaFutures}
@@ -155,7 +157,7 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
 
     When("Kafka comes back up")
     EmbeddedKafka.startKafka(kafkaDir)
-    Thread.sleep(5 * 1000)  // let Kafka start up
+    Thread.sleep(5 * 1000) // let Kafka start up
 
     sourceActorRef ! "c"
 
@@ -251,15 +253,63 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
 
     sinkProbe.request(n = 2)
 
-    Thread.sleep(60 * 1000)  // ample time for things to fail if they are meant to
+    Thread.sleep(60 * 1000) // ample time for things to fail if they are meant to
 
     When("Kafka becomes available")
     EmbeddedKafka.startKafka(kafkaDir)
-    Thread.sleep(5 * 1000)  // let Kafka start up
+    Thread.sleep(5 * 1000) // let Kafka start up
 
     Then("the stream will start consuming and processing messages from the input topic")
     sinkProbe.expectNext("A", "B")
   }
+
+  it should "be resilient to exceptions in deserialization while using AvroEncoders" in {
+    val zkDir = testZooKeeperDir()
+    val kafkaDir = testKafkaDir()
+    EmbeddedKafka.startZooKeeper(zkDir)
+    EmbeddedKafka.startKafka(kafkaDir)
+
+    // let ZooKeeper/Kafka start up - otherwise publishStringMessageToKafka() may throw net.manub.embeddedkafka.KafkaUnavailableException
+    Thread.sleep(5 * 1000)
+
+    val topic = testTopic()
+
+    Given("an input topic with messages")
+
+    implicit val serializer = AvroSpecificRecordSerializer[ChartChanged]()
+    val header = me.crowdmix.event.newEventHeader
+    publishToKafka(topic, ChartChanged(header, "test1"))
+    publishStringMessageToKafka(topic, "a")
+    publishToKafka(topic, ChartChanged(header, "test2"))
+
+    val kafka = new ReactiveKafka()
+
+    val consumerProperties =
+      ConsumerProperties(
+        brokerList = brokerList,
+        zooKeeperHost = zooKeeperHost,
+        topic = topic,
+        groupId = testConsumerGroupId(),
+        decoder = AvroSpecificRecordDecoder[ChartChanged](ChartChanged.SCHEMA$))
+
+    And("the stream is created and run")
+    val sinkProbe =
+      Source.fromPublisher(kafka.consume(consumerProperties))
+        .map { messageAndMetadata =>
+          messageAndMetadata.message()
+        }
+        .toMat(TestSink.probe[ChartChanged])(Keep.right)
+        .run()
+
+    sinkProbe.request(n = 2)
+
+    Thread.sleep(5 * 1000) // ample time for things to fail if they are meant to
+
+    Then("the stream will start consuming and processing messages from the input topic ignoreing failures")
+    sinkProbe.expectNext(ChartChanged(header, "test1"))
+    sinkProbe.expectNext(ChartChanged(header, "test2"))
+  }
+
 
   it should
     "be resilient to Kafka becoming unavailable during processing and resume processing as soon as Kafka becomes available" in {
@@ -310,11 +360,11 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
     EmbeddedKafka.stopKafka()
 
     sinkProbe.request(n = 1)
-    Thread.sleep(60 * 1000)  // ample time for things to fail if they are meant to
+    Thread.sleep(60 * 1000) // ample time for things to fail if they are meant to
 
     And("Kafka later becomes available")
     EmbeddedKafka.startKafka(kafkaDir)
-    Thread.sleep(5 * 1000)  // let Kafka start up
+    Thread.sleep(5 * 1000) // let Kafka start up
 
     Then("the stream should resume consuming and processing messages from the input topic")
     sinkProbe.expectNext("C")
@@ -381,8 +431,11 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
   }
 
   type LogEventCondition = LogEvent => Boolean
+
   def expectLogEvent(condition: LogEventCondition)(block: => Unit): Unit = expectLogEvents(condition)(block)
+
   def expectLogEvents(conditions: LogEventCondition*)(block: => Unit): Unit = expectLogEvents(List(conditions: _*))(block)
+
   def expectLogEvents(conditions: List[LogEventCondition])(block: => Unit): Unit = {
     object ReportRemaining
 
@@ -416,22 +469,29 @@ class StreamResilienceSpec extends TestKit(ActorSystem("StreamResilienceSpec", C
       system.eventStream.unsubscribe(logListener)
     }
   }
+
   val KafkaProducerRetriesAndFailsToSend: LogEventCondition = { event =>
     event.isInstanceOf[Logging.Error] &&
-      event.asInstanceOf[Logging.Error].cause.getClass.getCanonicalName == "kafka.common.FailedToSendMessageException" &&  // matching on canonical name avoids headaches of maintaining precise dependency on Kafka
+      event.asInstanceOf[Logging.Error].cause.getClass.getCanonicalName == "kafka.common.FailedToSendMessageException" && // matching on canonical name avoids headaches of maintaining precise dependency on Kafka
       event.message == "Failed to send messages after 3 tries."
   }
+
   def actorRestarted(actorRef: ActorRef): LogEventCondition = { event =>
     event.logSource == actorRef.path.toString &&
       event.message == "restarted"
   }
 
   def testClientId() = s"clientId-${randomUUID()}"
+
   def testConsumerGroupId() = s"groupId-${randomUUID()}"
+
   def testTopic() = s"topic-${randomUUID()}"
+
   def testSourceName() = s"kafka-source-${randomUUID()}"
+
   def testSinkName() = s"kafka-sink-${randomUUID()}"
 
   def testZooKeeperDir() = Directory.makeTemp("zookeeper")
+
   def testKafkaDir() = Directory.makeTemp("kafka")
 }
